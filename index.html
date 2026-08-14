@@ -342,6 +342,20 @@
   .pace-row .pr-item b{display:block;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--year);margin-top:2px;}
   .pace-note{font-size:11.5px;color:var(--ink-faint);text-align:center;padding:6px 0;font-style:italic;}
 
+  .pace-header-line{
+    font-size:11.5px;color:var(--ink-soft);margin-bottom:3px;
+  }
+  .pace-header-line b{font-family:'JetBrains Mono',monospace;color:var(--ink);font-weight:700;}
+  .rest-select{
+    font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--year);
+    background:var(--year-bg);border:1px solid var(--year);border-radius:6px;
+    padding:1px 4px;-webkit-appearance:auto;appearance:auto;
+  }
+  .pace-effective-line{
+    font-size:11px;color:var(--ink-faint);margin-bottom:9px;
+  }
+  .pace-effective-line b{font-family:'JetBrains Mono',monospace;color:var(--year);font-weight:700;}
+
   details.amount-details{
     border-top:1px dashed var(--line);
     margin-top:10px;
@@ -1082,28 +1096,67 @@
       </div>`;
   }
 
-  function paceRow(key, current, remainingMonths, remainingDays){
+  function paceRow(key, current, remainingMonths, effectiveDays){
     const target = YEAR_GOALS[key];
     const label = GOAL_LABELS[key];
     const unit = GOAL_UNITS[key];
     const remaining = Math.max(0, target - current);
 
     if(remaining === 0){
-      return `<div class="pace-row"><div class="pr-title">${label}</div><div class="pace-note">🎉 已達成目標，剩餘 0 ${unit}</div></div>`;
+      return `<div class="pace-row" data-key="${key}"><div class="pr-title">${label}</div><div class="pace-note">🎉 已達成目標，剩餘 0 ${unit}</div></div>`;
     }
 
     const perMonth = remainingMonths > 0 ? remaining / remainingMonths : null;
-    const perDay = remainingDays > 0 ? remaining / remainingDays : null;
+    const perDay = effectiveDays > 0 ? remaining / effectiveDays : null;
 
     return `
-      <div class="pace-row">
+      <div class="pace-row" data-key="${key}">
         <div class="pr-title">${label}（還差 ${fmtNum(remaining)} ${unit}）</div>
         <div class="pr-grid">
           <div class="pr-item"><span>平均每月</span><b>${perMonth!==null ? fmtNum(perMonth) : '－'}</b></div>
-          <div class="pr-item"><span>平均每天</span><b>${perDay!==null ? fmtNum(perDay) : '－'}</b></div>
+          <div class="pr-item"><span>平均每天</span><b id="pace-${key}-day">${perDay!==null ? fmtNum(perDay) : '－'}</b></div>
         </div>
       </div>`;
   }
+
+  // 使用者設定的「預計休假天數」，會從剩餘天數中扣除後再計算平均每天配速
+  let restDays = 0;
+  // 記住目前這張配速卡片的計算基準，讓休假天數輸入變動時可以只更新數字，不用整卡重繪（避免輸入框失焦）
+  let paceRemainingDaysBase = 0;
+  let paceRemainingMonths = 0;
+  let paceSumSnapshot = null;
+
+  // 依目前輸入的休假天數，重新計算「平均每天」並只更新畫面上的數字，不重繪整張卡片
+  function recalcPaceDisplay(){
+    if(!paceSumSnapshot) return;
+    const input = document.getElementById("restDaysInput");
+    if(!input) return;
+
+    let val = Number(input.value);
+    if(isNaN(val) || val < 0) val = 0;
+    if(val > paceRemainingDaysBase) val = paceRemainingDaysBase;
+    restDays = val;
+
+    const effectiveDays = Math.max(0, paceRemainingDaysBase - restDays);
+    const noteEl = document.getElementById("paceEffectiveDaysVal");
+    if(noteEl) noteEl.textContent = effectiveDays;
+
+    ["shiftCount","laborSessions","allSessions"].forEach(key=>{
+      const target = YEAR_GOALS[key];
+      const current = paceSumSnapshot[key];
+      const remaining = Math.max(0, target - current);
+      const dayEl = document.getElementById(`pace-${key}-day`);
+      if(!dayEl) return; // 已達標的項目沒有這個欄位
+      dayEl.textContent = (remaining > 0 && effectiveDays > 0) ? fmtNum(remaining / effectiveDays) : (remaining > 0 ? '－' : '');
+    });
+  }
+
+  // 事件委派：休假天數輸入框每次變動都重新計算（元素會隨卡片重繪，故綁在固定不變的外層容器上）
+  document.getElementById("yearStatsScroll").addEventListener("change", (e)=>{
+    if(e.target && e.target.id === "restDaysInput"){
+      recalcPaceDisplay();
+    }
+  });
 
   function renderYearSummary() {
     const startOfYear = `${viewYear}-01-01`;
@@ -1133,7 +1186,7 @@
         </details>
       </div>`;
 
-    // 卡片三：達標配速（只在檢視「今年」時計算，其他年份沒有意義）
+    // 卡片二：達標配速（只在檢視「今年」時計算，其他年份沒有意義）
     const actualYear = Number(todayStr.slice(0,4));
     let cardPace;
     if(viewYear === actualYear){
@@ -1142,12 +1195,26 @@
       const remainingDays = Math.floor((endOfYearDate - now) / 86400000) + 1; // 含今天
       const remainingMonths = 12 - now.getMonth(); // 含當月
 
+      // 記住這次計算的基準，供休假天數輸入變動時使用
+      paceRemainingDaysBase = remainingDays;
+      paceRemainingMonths = remainingMonths;
+      paceSumSnapshot = { shiftCount: sum.shiftCount, laborSessions: sum.laborSessions, allSessions: sum.allSessions };
+      if(restDays > remainingDays) restDays = remainingDays;
+      const effectiveDays = Math.max(0, remainingDays - restDays);
+      const restOptions = Array.from({length: remainingDays + 1}, (_, i) => i)
+        .map(i => `<option value="${i}"${i === restDays ? ' selected' : ''}>${i}</option>`)
+        .join("");
+
       cardPace = `
         <div class="year-card">
-          <div class="yc-title">達標配速<span class="yc-sub">剩餘 ${remainingMonths} 個月・${remainingDays} 天</span></div>
-          ${paceRow("shiftCount", sum.shiftCount, remainingMonths, remainingDays)}
-          ${paceRow("laborSessions", sum.laborSessions, remainingMonths, remainingDays)}
-          ${paceRow("allSessions", sum.allSessions, remainingMonths, remainingDays)}
+          <div class="yc-title">達標配速</div>
+          <div class="pace-header-line">
+            剩餘 <b>${remainingMonths}</b> 個月・<b>${remainingDays}</b> 天 － <select id="restDaysInput" class="rest-select">${restOptions}</select> 天休假
+          </div>
+          <div class="pace-effective-line">扣除後可工作約 <b id="paceEffectiveDaysVal">${effectiveDays}</b> 天</div>
+          ${paceRow("shiftCount", sum.shiftCount, remainingMonths, effectiveDays)}
+          ${paceRow("laborSessions", sum.laborSessions, remainingMonths, effectiveDays)}
+          ${paceRow("allSessions", sum.allSessions, remainingMonths, effectiveDays)}
         </div>`;
     } else if(viewYear < actualYear){
       cardPace = `
